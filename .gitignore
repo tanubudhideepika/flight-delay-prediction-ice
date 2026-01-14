@@ -9,6 +9,8 @@ __pycache__/
 env/
 venv/
 flight_env/
+test.py
+test.ipynb
 
 # Jupyter
 .ipynb_checkpoints/
