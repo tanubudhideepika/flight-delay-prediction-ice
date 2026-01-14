@@ -1,0 +1,39 @@
+# Create .gitignore file
+cat > .gitignore << EOF
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+flight_env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data (large files)
+*.csv
+data/*.csv
+!data/sample_data.csv  # Can include small sample
+
+# Models (large files)
+models/*.pkl
+models/*.h5
+*.pkl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Outputs (optional - you might want to keep these)
+# outputs/
+
+EOF
