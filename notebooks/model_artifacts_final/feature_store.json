@@ -1,0 +1,17 @@
+{
+  "global_delay_rate": 0.15,
+  "risk_maps": {
+    "ORIGIN_RISK": {},
+    "DEST_RISK": {},
+    "ROUTE_RISK": {},
+    "UNIQUE_CARRIER_RISK": {},
+    "CARRIER_ROUTE_RISK": {}
+  },
+  "count_maps": {
+    "TRAIN_ORIGIN_COUNT": {},
+    "TRAIN_DEST_COUNT": {},
+    "TRAIN_ROUTE_COUNT": {},
+    "TRAIN_UNIQUE_CARRIER_COUNT": {},
+    "TRAIN_CARRIER_ROUTE_COUNT": {}
+  }
+}
