@@ -11,6 +11,7 @@ venv/
 flight_env/
 test.py
 test.ipynb
+.env/
 
 # Jupyter
 .ipynb_checkpoints/
