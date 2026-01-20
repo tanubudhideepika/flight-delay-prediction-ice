@@ -62,10 +62,14 @@
   "operating_threshold": 0.3,
   "metrics_test": {
     "model": "CatBoost",
-    "roc_auc": 0.6930430801895046,
-    "pr_auc": 0.2988188111878081,
-    "brier": 0.18626527999466633
+    "roc_auc": 0.6731748895848371,
+    "pr_auc": 0.2965938255350137,
+    "brier": 0.11550393858627388
   },
   "delay_rate_train": 0.15490590262526607,
-  "delay_rate_test": 0.12910092239078286
+  "delay_rate_test": 0.12910092239078286,
+  "calibration": {
+    "method": "platt_sigmoid",
+    "calibrator_path": "platt_calibrator.joblib"
+  }
 }

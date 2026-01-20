@@ -140,14 +140,16 @@ A **time-based train/test split** was used to simulate real-world deployment.
 
 # 3. Model Evaluation & Selection
 
-## 3.1 Evaluation Metrics
+## 3.1 Evaluation Metrics and Business Rationale
 
-Primary metric:
-- **Precision–Recall AUC (PR-AUC)**, appropriate for imbalanced data
+Flight delay prediction is a highly imbalanced classification problem, with delayed flights representing approximately 13–15% of observations. In this context, traditional accuracy metrics are misleading, as a naive model predicting all flights as on time would achieve high accuracy without providing value.
 
-Secondary metrics:
-- ROC-AUC for ranking performance
-- Brier score for probability calibration
+To address this, the following metrics were used:
+- **Precision–Recall AUC (PR-AUC)** as the primary metric, as it better reflects model performance on the minority (delayed) class.data
+- **ROC-AUC** as a secondary metric to evaluate overall ranking ability.
+- **Brier score** to assess the quality and reliability of predicted probabilities, which is critical for user-facing risk estimates.
+
+This combination allows evaluation of both ranking performance and probability calibration, aligning with the needs of a travel decision-support application.
 
 ---
 
@@ -166,6 +168,10 @@ CatBoost achieved the strongest PR-AUC and was selected as the final model.
 ## 3.3 Threshold Selection
 
 A probability threshold of **0.30** was chosen to prioritize recall (~90%), ensuring that most delayed flights are flagged even at the cost of some false positives.
+
+This choice reflects a deliberate trade-off:
+- Higher recall reduces the likelihood of missing delayed flights.
+- Lower precision increases false positives, which are acceptable in this context because the application provides risk awareness, not hard guarantees.
 
 ---
 
