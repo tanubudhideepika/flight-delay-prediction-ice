@@ -12,6 +12,7 @@ flight_env/
 test.py
 test.ipynb
 .env
+/Users/nikitha/Documents/flight-delay-prediction-ice/.env
 
 
 # Jupyter
@@ -36,8 +37,3 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-
-# Outputs (optional - you might want to keep these)
-# outputs/
-
-EOF
