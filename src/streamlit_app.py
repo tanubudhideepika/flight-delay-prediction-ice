@@ -68,6 +68,321 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8001")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+# -------- Backend Client ---------
+class BackendClient:
+    """
+    Thin HTTP client for FastAPI backend with logging + latency tracking.
+    """
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
+        logger.info(f"BackendClient initialized | base_url={self.base_url}")
+
+    def _post(self, path: str, payload: dict) -> dict:
+        request_id = str(uuid.uuid4())
+        url = f"{self.base_url}{path}"
+        start = time.time()
+
+        logger.info(
+            f"[{request_id}] POST {path} | payload={payload}"
+        )
+
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+            latency_ms = int((time.time() - start) * 1000)
+
+            if resp.status_code >= 400:
+                logger.warning(
+                    f"[{request_id}] POST {path} FAILED "
+                    f"| status={resp.status_code} "
+                    f"| latency_ms={latency_ms} "
+                    f"| response={resp.text}"
+                )
+                return {"ok": False, "error": resp.text}
+
+            data = resp.json()
+            logger.info(
+                f"[{request_id}] POST {path} OK "
+                f"| latency_ms={latency_ms}"
+            )
+
+            return {"ok": True, "data": data}
+
+        except Exception as e:
+            latency_ms = int((time.time() - start) * 1000)
+            logger.exception(
+                f"[{request_id}] POST {path} EXCEPTION "
+                f"| latency_ms={latency_ms} "
+                f"| error={str(e)}"
+            )
+            return {"ok": False, "error": str(e)}
+
+    def health(self) -> dict:
+        request_id = str(uuid.uuid4())
+        url = f"{self.base_url}/health"
+
+        try:
+            resp = requests.get(url, timeout=5)
+            logger.info(f"[{request_id}] GET /health OK")
+            return {"ok": True, **resp.json()}
+        except Exception as e:
+            logger.warning(
+                f"[{request_id}] GET /health FAILED | error={str(e)}"
+            )
+            return {"ok": False, "status": "offline"}
+
+    def predict(self, args: dict) -> dict:
+        return self._post("/predict", args)
+
+    def recommend_times(self, args: dict) -> dict:
+        return self._post("/recommend/times", args)
+
+    def recommend_airlines(self, args: dict) -> dict:
+        return self._post("/recommend/airlines", args)
+
+
+# ----- OpenAI Agent -----
+class OpenAIAgent:
+    SYSTEM_PROMPT = """You are a flight delay assistant for a travel app.
+
+    Your job is to:
+    1) Extract flight details from the user message.
+    2) Call the right tool.
+    3) Summarize the output in plain language.
+
+    IMPORTANT INPUT RULES
+    - Airports MUST be IATA airport codes like JFK, LAX, ORD (3 letters).
+    - Carriers MUST be airline codes like AA, DL, UA, WN, B6, AS, NK, F9.
+    - dep_hour MUST be an integer 0–23 in 24-hour format.
+    - day_of_week MUST be 1–7 (1=Mon … 7=Sun).
+    - month MUST be 1–12.
+
+    If the user gives city names (e.g., “Chicago”, “New York”), ask ONE clarifying question OR make a clear assumption and state it.
+    Examples:
+    - Chicago defaults to ORD unless user says Midway (MDW).
+    - New York defaults to JFK unless user says LaGuardia (LGA) or Newark (EWR).
+
+    TIME PARSING
+    - If the user says “morning”, use 8.
+    - “afternoon” → 14
+    - “evening” → 18
+    - “late night” → 21
+    - If the user gives “5 PM”, convert to 17.
+
+    SUPPORTED CARRIER CODES
+    AA=American, DL=Delta, UA=United, WN=Southwest, B6=JetBlue, AS=Alaska,
+    NK=Spirit, F9=Frontier
+
+    RISK LABELS (must match the app)
+    - LOW: < 18%
+    - MODERATE: 18%–30%
+    - HIGH: ≥ 30%
+
+    Only ask ONE clarifying question if required info is missing.
+    """
+
+    TOOLS = [
+        {"type": "function", "function": {"name": "predict_flight", "description": "Predict delay",
+            "parameters": {"type": "object", "properties": {
+                "origin": {"type": "string"}, "destination": {"type": "string"},
+                "carrier": {"type": "string"}, "dep_hour": {"type": "integer"},
+                "day_of_week": {"type": "integer"}, "month": {"type": "integer"},
+                "distance": {"type": "number", "description": "Optional route distance in miles"}},
+                "required": ["origin", "destination", "carrier", "dep_hour", "day_of_week", "month"]}}},
+        {"type": "function", "function": {"name": "recommend_best_times", "description": "Best times",
+            "parameters": {"type": "object", "properties": {
+                "origin": {"type": "string"}, "destination": {"type": "string"},
+                "carrier": {"type": "string"}, "day_of_week": {"type": "integer"}, "month": {"type": "integer"}},
+                "required": ["origin", "destination", "carrier", "day_of_week", "month"]}}},
+        {"type": "function", "function": {"name": "recommend_best_airlines", "description": "Compare airlines",
+            "parameters": {"type": "object", "properties": {
+                "origin": {"type": "string"}, "destination": {"type": "string"},
+                "dep_hour": {"type": "integer"}, "day_of_week": {"type": "integer"}, "month": {"type": "integer"}},
+                "required": ["origin", "destination", "dep_hour", "day_of_week", "month"]}}}
+    ]
+
+    def __init__(self, api_key: str, backend: BackendClient):
+        self.client = OpenAI(api_key=api_key)
+        self.backend = backend
+
+    # -----------------------------
+    # Lightweight input normalizers
+    # -----------------------------
+    CITY_TO_DEFAULT_AIRPORT = {
+        "CHICAGO": "ORD",
+        "NEW YORK": "JFK",
+        "NYC": "JFK",
+        "LOS ANGELES": "LAX",
+        "LA": "LAX",
+        "SAN FRANCISCO": "SFO",
+        "SF": "SFO",
+        "MIAMI": "MIA",
+        "BOSTON": "BOS",
+        "SEATTLE": "SEA",
+        "DENVER": "DEN",
+        "DALLAS": "DFW",
+        "HOUSTON": "IAH",
+        "ATLANTA": "ATL",
+        "LAS VEGAS": "LAS",
+        "ORLANDO": "MCO",
+        "PHOENIX": "PHX",
+    }
+
+    AIRLINE_NAME_TO_CODE = {
+        "AMERICAN": "AA",
+        "AMERICAN AIRLINES": "AA",
+        "DELTA": "DL",
+        "DELTA AIR LINES": "DL",
+        "UNITED": "UA",
+        "UNITED AIRLINES": "UA",
+        "SOUTHWEST": "WN",
+        "SOUTHWEST AIRLINES": "WN",
+        "JETBLUE": "B6",
+        "JETBLUE AIRWAYS": "B6",
+        "ALASKA": "AS",
+        "ALASKA AIRLINES": "AS",
+        "SPIRIT": "NK",
+        "SPIRIT AIRLINES": "NK",
+        "FRONTIER": "F9",
+        "FRONTIER AIRLINES": "F9",
+    }
+
+    @staticmethod
+    def _to_iata(value: Any) -> str:
+        """Normalize an origin/destination value into a likely IATA code."""
+        if value is None:
+            return ""
+        s = str(value).strip().upper()
+        # Already an airport code
+        if len(s) == 3 and s.isalpha():
+            return s
+        return OpenAIAgent.CITY_TO_DEFAULT_AIRPORT.get(s, s)
+
+    @staticmethod
+    def _to_carrier_code(value: Any) -> str:
+        if value is None:
+            return ""
+        s = str(value).strip().upper()
+        # Already a carrier code
+        if len(s) in (2, 3) and s.replace(" ", "").isalnum():
+            # E.g. AA, DL, UA, WN, B6
+            return s
+        return OpenAIAgent.AIRLINE_NAME_TO_CODE.get(s, s)
+
+    @staticmethod
+    def _clamp_hour(h: Any) -> int:
+        """Ensure dep_hour is an int in [0, 23]."""
+        try:
+            h_int = int(h)
+        except Exception:
+            return 12
+        return max(0, min(23, h_int))
+
+    @staticmethod
+    def _validate_required(args: dict, required: List[str]) -> List[str]:
+        missing = []
+        for k in required:
+            if k not in args or args[k] in (None, ""):
+                missing.append(k)
+        return missing
+
+    def _normalize_tool_args(self, name: str, args: dict) -> dict:
+        """Sanitize tool arguments before calling backend.
+
+        This is defensive programming to reduce bad predictions caused by
+        ambiguous user text or imperfect tool-call arguments.
+        """
+        clean = dict(args or {})
+
+        if "origin" in clean:
+            clean["origin"] = self._to_iata(clean["origin"])
+        if "destination" in clean:
+            clean["destination"] = self._to_iata(clean["destination"])
+        if "carrier" in clean:
+            clean["carrier"] = self._to_carrier_code(clean["carrier"])  # AA/DL/UA...
+        if "dep_hour" in clean:
+            clean["dep_hour"] = self._clamp_hour(clean["dep_hour"])  # 0–23
+
+        # The backend can accept an optional `distance` field.
+        if name == "predict_flight" and "distance" not in clean:
+            try:
+                est = haversine_miles(clean.get("origin", ""), clean.get("destination", ""))
+                if est is not None:
+                    clean["distance"] = float(round(est, 1))
+            except Exception:
+                pass
+
+        # Coerce ints
+        for k in ("day_of_week", "month"):
+            if k in clean and clean[k] not in (None, ""):
+                try:
+                    clean[k] = int(clean[k])
+                except Exception:
+                    pass
+
+        # Basic bounds
+        if "day_of_week" in clean:
+            clean["day_of_week"] = max(1, min(7, int(clean.get("day_of_week", 1))))
+        if "month" in clean:
+            clean["month"] = max(1, min(12, int(clean.get("month", 1))))
+
+        return clean
+
+    def _dispatch(self, name: str, args: dict) -> dict:
+        args = self._normalize_tool_args(name, args)
+
+        # Debug hooks for UI
+        st.session_state.debug_last_call = {"tool": name, "args": args}
+
+        # Validate required fields to prevent silent bad calls.
+        req_map = {
+            "predict_flight": ["origin", "destination", "carrier", "dep_hour", "day_of_week", "month"],
+            "recommend_best_times": ["origin", "destination", "carrier", "day_of_week", "month"],
+            "recommend_best_airlines": ["origin", "destination", "dep_hour", "day_of_week", "month"],
+        }
+        missing = self._validate_required(args, req_map.get(name, []))
+        if missing:
+            return {
+                "ok": False,
+                "error": f"Missing required fields for {name}: {', '.join(missing)}. "
+                         f"Please specify airports (IATA codes), airline, day, month, and time.",
+            }
+
+        if name == "predict_flight":
+            resp = self.backend.predict(args)
+            st.session_state.debug_last_resp = resp
+            return resp
+        elif name == "recommend_best_times":
+            resp = self.backend.recommend_times(args)
+            st.session_state.debug_last_resp = resp
+            return resp
+        elif name == "recommend_best_airlines":
+            resp = self.backend.recommend_airlines(args)
+            st.session_state.debug_last_resp = resp
+            return resp
+        return {"ok": False}
+
+    def chat(self, user_text: str, history: List[Dict]) -> tuple:
+        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        messages.extend([{"role": h["role"], "content": h["content"]} for h in history])
+        messages.append({"role": "user", "content": user_text})
+
+        resp = self.client.chat.completions.create(model=OPENAI_MODEL, messages=messages,
+                                                    tools=self.TOOLS, tool_choice="auto", temperature=0.3)
+        msg = resp.choices[0].message
+        tool_results = []
+
+        if msg.tool_calls:
+            for call in msg.tool_calls:
+                args = json.loads(call.function.arguments)
+                result = self._dispatch(call.function.name, args)
+                tool_results.append({"tool": call.function.name, "result": result})
+                messages.append({"role": "assistant", "content": "", "tool_calls": [call]})
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
+            resp2 = self.client.chat.completions.create(model=OPENAI_MODEL, messages=messages, temperature=0.3)
+            return resp2.choices[0].message.content, tool_results
+        return msg.content, tool_results
+
 # ------- UI Setup --------
 st.set_page_config(
     page_title="Flight Delay AI Agent",
@@ -321,323 +636,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-# -------- Backend Client ---------
-
-class BackendClient:
-    class BackendClient:
-        """
-        Thin HTTP client for FastAPI backend with logging + latency tracking.
-        """
-
-        def __init__(self, base_url: str):
-            self.base_url = base_url.rstrip("/")
-            logger.info(f"BackendClient initialized | base_url={self.base_url}")
-
-        def _post(self, path: str, payload: dict) -> dict:
-            request_id = str(uuid.uuid4())
-            url = f"{self.base_url}{path}"
-            start = time.time()
-
-            logger.info(
-                f"[{request_id}] POST {path} | payload={payload}"
-            )
-
-            try:
-                resp = requests.post(url, json=payload, timeout=30)
-                latency_ms = int((time.time() - start) * 1000)
-
-                if resp.status_code >= 400:
-                    logger.warning(
-                        f"[{request_id}] POST {path} FAILED "
-                        f"| status={resp.status_code} "
-                        f"| latency_ms={latency_ms} "
-                        f"| response={resp.text}"
-                    )
-                    return {"ok": False, "error": resp.text}
-
-                data = resp.json()
-                logger.info(
-                    f"[{request_id}] POST {path} OK "
-                    f"| latency_ms={latency_ms}"
-                )
-
-                return {"ok": True, "data": data}
-
-            except Exception as e:
-                latency_ms = int((time.time() - start) * 1000)
-                logger.exception(
-                    f"[{request_id}] POST {path} EXCEPTION "
-                    f"| latency_ms={latency_ms} "
-                    f"| error={str(e)}"
-                )
-                return {"ok": False, "error": str(e)}
-
-        def health(self) -> dict:
-            request_id = str(uuid.uuid4())
-            url = f"{self.base_url}/health"
-
-            try:
-                resp = requests.get(url, timeout=5)
-                logger.info(f"[{request_id}] GET /health OK")
-                return {"ok": True, **resp.json()}
-            except Exception as e:
-                logger.warning(
-                    f"[{request_id}] GET /health FAILED | error={str(e)}"
-                )
-                return {"ok": False, "status": "offline"}
-
-        def predict(self, args: dict) -> dict:
-            return self._post("/predict", args)
-
-        def recommend_times(self, args: dict) -> dict:
-            return self._post("/recommend/times", args)
-
-        def recommend_airlines(self, args: dict) -> dict:
-            return self._post("/recommend/airlines", args)
-
-# ----- OpenAI Agent -----
-
-class OpenAIAgent:
-    SYSTEM_PROMPT = """You are a flight delay assistant for a travel app.
-
-    Your job is to:
-    1) Extract flight details from the user message.
-    2) Call the right tool.
-    3) Summarize the output in plain language.
-
-    IMPORTANT INPUT RULES
-    - Airports MUST be IATA airport codes like JFK, LAX, ORD (3 letters).
-    - Carriers MUST be airline codes like AA, DL, UA, WN, B6, AS, NK, F9.
-    - dep_hour MUST be an integer 0–23 in 24-hour format.
-    - day_of_week MUST be 1–7 (1=Mon … 7=Sun).
-    - month MUST be 1–12.
-
-    If the user gives city names (e.g., “Chicago”, “New York”), ask ONE clarifying question OR make a clear assumption and state it.
-    Examples:
-    - Chicago defaults to ORD unless user says Midway (MDW).
-    - New York defaults to JFK unless user says LaGuardia (LGA) or Newark (EWR).
-
-    TIME PARSING
-    - If the user says “morning”, use 8.
-    - “afternoon” → 14
-    - “evening” → 18
-    - “late night” → 21
-    - If the user gives “5 PM”, convert to 17.
-
-    SUPPORTED CARRIER CODES
-    AA=American, DL=Delta, UA=United, WN=Southwest, B6=JetBlue, AS=Alaska,
-    NK=Spirit, F9=Frontier
-
-    RISK LABELS (must match the app)
-    - LOW: < 18%
-    - MODERATE: 18%–30%
-    - HIGH: ≥ 30%
-
-    Only ask ONE clarifying question if required info is missing.
-    """
-
-    TOOLS = [
-        {"type": "function", "function": {"name": "predict_flight", "description": "Predict delay",
-            "parameters": {"type": "object", "properties": {
-                "origin": {"type": "string"}, "destination": {"type": "string"},
-                "carrier": {"type": "string"}, "dep_hour": {"type": "integer"},
-                "day_of_week": {"type": "integer"}, "month": {"type": "integer"},
-                "distance": {"type": "number", "description": "Optional route distance in miles"}},
-                "required": ["origin", "destination", "carrier", "dep_hour", "day_of_week", "month"]}}},
-        {"type": "function", "function": {"name": "recommend_best_times", "description": "Best times",
-            "parameters": {"type": "object", "properties": {
-                "origin": {"type": "string"}, "destination": {"type": "string"},
-                "carrier": {"type": "string"}, "day_of_week": {"type": "integer"}, "month": {"type": "integer"}},
-                "required": ["origin", "destination", "carrier", "day_of_week", "month"]}}},
-        {"type": "function", "function": {"name": "recommend_best_airlines", "description": "Compare airlines",
-            "parameters": {"type": "object", "properties": {
-                "origin": {"type": "string"}, "destination": {"type": "string"},
-                "dep_hour": {"type": "integer"}, "day_of_week": {"type": "integer"}, "month": {"type": "integer"}},
-                "required": ["origin", "destination", "dep_hour", "day_of_week", "month"]}}}
-    ]
-
-    def __init__(self, api_key: str, backend: BackendClient):
-        self.client = OpenAI(api_key=api_key)
-        self.backend = backend
-
-    # -----------------------------
-    # Lightweight input normalizers
-    # -----------------------------
-    CITY_TO_DEFAULT_AIRPORT = {
-        "CHICAGO": "ORD",
-        "NEW YORK": "JFK",
-        "NYC": "JFK",
-        "LOS ANGELES": "LAX",
-        "LA": "LAX",
-        "SAN FRANCISCO": "SFO",
-        "SF": "SFO",
-        "MIAMI": "MIA",
-        "BOSTON": "BOS",
-        "SEATTLE": "SEA",
-        "DENVER": "DEN",
-        "DALLAS": "DFW",
-        "HOUSTON": "IAH",
-        "ATLANTA": "ATL",
-        "LAS VEGAS": "LAS",
-        "ORLANDO": "MCO",
-        "PHOENIX": "PHX",
-    }
-
-    AIRLINE_NAME_TO_CODE = {
-        "AMERICAN": "AA",
-        "AMERICAN AIRLINES": "AA",
-        "DELTA": "DL",
-        "DELTA AIR LINES": "DL",
-        "UNITED": "UA",
-        "UNITED AIRLINES": "UA",
-        "SOUTHWEST": "WN",
-        "SOUTHWEST AIRLINES": "WN",
-        "JETBLUE": "B6",
-        "JETBLUE AIRWAYS": "B6",
-        "ALASKA": "AS",
-        "ALASKA AIRLINES": "AS",
-        "SPIRIT": "NK",
-        "SPIRIT AIRLINES": "NK",
-        "FRONTIER": "F9",
-        "FRONTIER AIRLINES": "F9",
-    }
-
-    @staticmethod
-    def _to_iata(value: Any) -> str:
-        """Normalize an origin/destination value into a likely IATA code."""
-        if value is None:
-            return ""
-        s = str(value).strip().upper()
-        # Already an airport code
-        if len(s) == 3 and s.isalpha():
-            return s
-        return OpenAIAgent.CITY_TO_DEFAULT_AIRPORT.get(s, s)
-
-    @staticmethod
-    def _to_carrier_code(value: Any) -> str:
-        if value is None:
-            return ""
-        s = str(value).strip().upper()
-        # Already a carrier code
-        if len(s) in (2, 3) and s.replace(" ", "").isalnum():
-            # E.g. AA, DL, UA, WN, B6
-            return s
-        return OpenAIAgent.AIRLINE_NAME_TO_CODE.get(s, s)
-
-    @staticmethod
-    def _clamp_hour(h: Any) -> int:
-        """Ensure dep_hour is an int in [0, 23]."""
-        try:
-            h_int = int(h)
-        except Exception:
-            return 12
-        return max(0, min(23, h_int))
-
-    @staticmethod
-    def _validate_required(args: dict, required: List[str]) -> List[str]:
-        missing = []
-        for k in required:
-            if k not in args or args[k] in (None, ""):
-                missing.append(k)
-        return missing
-
-    def _normalize_tool_args(self, name: str, args: dict) -> dict:
-        """Sanitize tool arguments before calling backend.
-
-        This is defensive programming to reduce bad predictions caused by
-        ambiguous user text or imperfect tool-call arguments.
-        """
-        clean = dict(args or {})
-
-        if "origin" in clean:
-            clean["origin"] = self._to_iata(clean["origin"])
-        if "destination" in clean:
-            clean["destination"] = self._to_iata(clean["destination"])
-        if "carrier" in clean:
-            clean["carrier"] = self._to_carrier_code(clean["carrier"])  # AA/DL/UA...
-        if "dep_hour" in clean:
-            clean["dep_hour"] = self._clamp_hour(clean["dep_hour"])  # 0–23
-
-        # The backend can accept an optional `distance` field.
-        if name == "predict_flight" and "distance" not in clean:
-            try:
-                est = haversine_miles(clean.get("origin", ""), clean.get("destination", ""))
-                if est is not None:
-                    clean["distance"] = float(round(est, 1))
-            except Exception:
-                pass
-
-        # Coerce ints
-        for k in ("day_of_week", "month"):
-            if k in clean and clean[k] not in (None, ""):
-                try:
-                    clean[k] = int(clean[k])
-                except Exception:
-                    pass
-
-        # Basic bounds
-        if "day_of_week" in clean:
-            clean["day_of_week"] = max(1, min(7, int(clean.get("day_of_week", 1))))
-        if "month" in clean:
-            clean["month"] = max(1, min(12, int(clean.get("month", 1))))
-
-        return clean
-
-    def _dispatch(self, name: str, args: dict) -> dict:
-        args = self._normalize_tool_args(name, args)
-
-        # Debug hooks for UI
-        st.session_state.debug_last_call = {"tool": name, "args": args}
-
-        # Validate required fields to prevent silent bad calls.
-        req_map = {
-            "predict_flight": ["origin", "destination", "carrier", "dep_hour", "day_of_week", "month"],
-            "recommend_best_times": ["origin", "destination", "carrier", "day_of_week", "month"],
-            "recommend_best_airlines": ["origin", "destination", "dep_hour", "day_of_week", "month"],
-        }
-        missing = self._validate_required(args, req_map.get(name, []))
-        if missing:
-            return {
-                "ok": False,
-                "error": f"Missing required fields for {name}: {', '.join(missing)}. "
-                         f"Please specify airports (IATA codes), airline, day, month, and time.",
-            }
-
-        if name == "predict_flight":
-            resp = self.backend.predict(args)
-            st.session_state.debug_last_resp = resp
-            return resp
-        elif name == "recommend_best_times":
-            resp = self.backend.recommend_times(args)
-            st.session_state.debug_last_resp = resp
-            return resp
-        elif name == "recommend_best_airlines":
-            resp = self.backend.recommend_airlines(args)
-            st.session_state.debug_last_resp = resp
-            return resp
-        return {"ok": False}
-
-    def chat(self, user_text: str, history: List[Dict]) -> tuple:
-        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
-        messages.extend([{"role": h["role"], "content": h["content"]} for h in history])
-        messages.append({"role": "user", "content": user_text})
-
-        resp = self.client.chat.completions.create(model=OPENAI_MODEL, messages=messages,
-                                                    tools=self.TOOLS, tool_choice="auto", temperature=0.3)
-        msg = resp.choices[0].message
-        tool_results = []
-
-        if msg.tool_calls:
-            for call in msg.tool_calls:
-                args = json.loads(call.function.arguments)
-                result = self._dispatch(call.function.name, args)
-                tool_results.append({"tool": call.function.name, "result": result})
-                messages.append({"role": "assistant", "content": "", "tool_calls": [call]})
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
-            resp2 = self.client.chat.completions.create(model=OPENAI_MODEL, messages=messages, temperature=0.3)
-            return resp2.choices[0].message.content, tool_results
-        return msg.content, tool_results
 
 
 # =============================

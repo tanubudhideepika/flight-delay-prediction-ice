@@ -263,7 +263,7 @@ class FeatureBuilder:
         return mp.get(key, default)
     
     @staticmethod
-    def _get_season(self, month: int) -> str:
+    def _get_season(month: int) -> str:
         """Get season name matching training data format."""
         if month in (12, 1, 2):
             return "Winter"
@@ -274,7 +274,7 @@ class FeatureBuilder:
         return "Fall"
     
     @staticmethod
-    def _get_dep_hour_bin(self, hour: int) -> str:
+    def _get_dep_hour_bin(hour: int) -> str:
         """
         FIXED: Return DEP_HOUR_BIN matching training data format.
         Training used pd.cut with bins like "0-5", "6-8", etc.
@@ -288,7 +288,7 @@ class FeatureBuilder:
         return "21-23"
     
     @staticmethod
-    def _get_distance_cat(self, distance: float) -> str:
+    def _get_distance_cat(distance: float) -> str:
         """Get distance category matching training data format."""
         if distance < 500: return "Short"
         elif distance < 1500: return "Medium"
