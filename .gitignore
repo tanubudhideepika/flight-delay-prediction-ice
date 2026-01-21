@@ -12,7 +12,6 @@ flight_env/
 test.py
 test.ipynb
 .env
-/Users/nikitha/Documents/flight-delay-prediction-ice/.env
 flight_delay_app.log
 streamlit_app.log
 notebooks_runner.log
