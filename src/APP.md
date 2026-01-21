@@ -18,19 +18,45 @@ The architecture follows modern ML engineering best practices, emphasizing **pro
 
 ## 2. High-Level Architecture
 
-User
-├─ Streamlit UI (Prediction + Chat)
-│ ├─ Flight input form
-│ ├─ Visual risk display (LOW / MODERATE / HIGH)
-│ └─ Conversational AI assistant
-│
-└─ FastAPI Backend (Prediction Service)
-├─ Feature Builder
-├─ CatBoost ML Model
-├─ Probability Calibration (Platt Scaling)
-├─ Explanation Engine
-└─ Logging & Monitoring
+The system follows a clean client–server architecture with a strict separation between
+user interface, business logic, and machine learning inference.
 
+### User Interaction Layer
+
+- **Streamlit Frontend**
+  - Flight delay prediction form
+  - Visual risk indicators (**LOW / MODERATE / HIGH**)
+  - Recommendation views (best times, best airlines)
+  - Conversational AI assistant (OpenAI-powered)
+
+### Backend Prediction Service
+- **FastAPI Application**
+  - Request validation
+  - Structured logging & monitoring
+  - REST API endpoints
+- **Feature Builder**
+  - Training-consistent feature generation
+  - Route, carrier, temporal, and distance features
+  - Historical risk lookups (train-only statistics)
+- **Machine Learning Layer**
+  - CatBoost classification model
+  - Native categorical feature handling
+  - Time-aware training split
+- **Probability Calibration**
+  - Platt Scaling (sigmoid calibration)
+  - Ensures realistic, user-facing probabilities
+- **Decision Logic**
+  - Risk classification (LOW / MODERATE / HIGH)
+  - Operating threshold optimization
+- **Explanation Engine**
+  - Human-readable delay risk explanations
+  - Consistent with model inputs and outputs
+- **Artifacts & Stores**
+  - Model weights
+  - Metadata (features, thresholds)
+  - Lookup tables (risk maps, counts)
+
+---
 ### Key Design Principle
 > **The UI never performs ML logic.**  
 All predictions, calibration, and explanations are handled by the backend, ensuring correctness and consistency.
@@ -126,7 +152,7 @@ Tree-based models (including CatBoost) often produce **overconfident probabiliti
 
 | Risk Level | Probability |
 |----------|------------|
-| LOW | < 25% |
+| LOW | < 15% |
 | MODERATE | 25% – 50% |
 | HIGH | ≥ 50% |
 
@@ -184,20 +210,11 @@ This supports debugging, auditing, and future monitoring integration.
 
 Despite its robustness, the system has known limitations:
 
-1. **No real-time data**
-   - Does not use live weather, ATC, or airport congestion feeds
-
-2. **Historical bias**
-   - Predictions reflect historical patterns (2017–2018 data)
-
-3. **Static model**
-   - No online learning or automatic retraining
-
-4. **Distance approximation**
-   - When distance is not provided, averages are used
-
-5. **Heuristic explanations**
-   - Explanations are rule-based, not full causal attributions
+1. **No real-time data**: Does not use live weather, ATC, or airport congestion feeds
+2. **Historical bias**: Predictions reflect historical patterns (2017–2018 data)
+3. **Static model**: No online learning or automatic retraining
+4. **Distance approximation**: When distance is not provided, averages are used
+5. **Heuristic explanations**: Explanations are rule-based, not full causal attributions
 
 ---
 
@@ -225,11 +242,6 @@ Despite its robustness, the system has known limitations:
 ## 11. Summary
 
 This project demonstrates a **production-ready AI capability**, integrating machine learning, probability calibration, explainability, APIs, and conversational AI into a cohesive system.
-
-It showcases not just prediction accuracy, but **responsible AI design**, emphasizing:
-- Trustworthy probabilities
-- Clear user communication
-- Scalable architecture
 
 ---
 

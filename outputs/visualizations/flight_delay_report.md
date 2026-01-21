@@ -39,17 +39,7 @@ Monthly analysis reveals strong seasonality:
 
 ---
 
-## 1.4 Time-of-Day Effects
-
-![Delay by Hour](viz02_temporal_analysis.png)
-
-Early morning departures (5–8 AM) have the lowest delay rates. Delay probability increases steadily throughout the day, reflecting accumulated upstream delays and airport congestion.
-
-Late-night flights exhibit higher delay rates but lower flight volumes, suggesting reduced recovery capacity.
-
----
-
-## 1.5 Day–Hour Interaction Effects
+## 1.4 Day–Hour Interaction Effects
 
 ![Day vs Hour Heatmap](viz03_day_hour_heatmap.png)
 
@@ -61,7 +51,7 @@ These interactions justify the inclusion of time-of-day and weekday interaction 
 
 ---
 
-## 1.6 Airport and Geographic Patterns
+## 1.5 Airport and Geographic Patterns
 
 ![Geographic Delay Patterns](viz04_geographic_analysis.png)
 
@@ -69,7 +59,7 @@ Certain airports and states consistently exhibit higher delay rates independent 
 
 ---
 
-## 1.7 Route-Level Analysis
+## 1.6 Route-Level Analysis
 
 ![Route Analysis](viz05_route_analysis.png)
 
@@ -77,7 +67,7 @@ Delay rates vary significantly by route. Some high-volume routes perform better 
 
 ---
 
-## 1.8 Carrier Performance
+## 1.7 Carrier Performance
 
 ![Carrier Analysis](viz06_carrier_analysis.png)
 
@@ -85,7 +75,7 @@ Carriers show distinct delay profiles. High-volume carriers are not necessarily 
 
 ---
 
-## 1.9 Distance and Delay Relationship
+## 1.8 Distance and Delay Relationship
 
 ![Distance Analysis](viz07_distance_analysis.png)
 
@@ -93,7 +83,7 @@ Distance alone shows weak linear correlation with delay probability. However, lo
 
 ---
 
-## 1.10 Correlation and Anomaly Analysis
+## 1.9 Correlation and Anomaly Analysis
 
 ![Feature Correlation Matrix](viz08_correlation_matrix.png)
 
@@ -104,37 +94,94 @@ Most individual features exhibit weak linear correlation with the delay outcome,
 Extreme delays are rare but genuine operational events. These outliers were retained to preserve real-world behavior.
 
 ---
-
 # 2. Machine Learning Model Development
 
 ## 2.1 Target Definition
 
-Flights were labeled as delayed if arrival delay was **≥ 15 minutes**, aligning with standard aviation performance benchmarks.
+The prediction target is a **binary flight delay indicator**, defined as:
+
+> **Delayed = 1 if arrival delay ≥ 15 minutes, else 0**
+
+This definition follows standard U.S. Department of Transportation and airline industry benchmarks for operational delays.
+
+The resulting dataset is **class-imbalanced**, with delayed flights representing approximately **13–15%** of total observations.
 
 ---
 
 ## 2.2 Feature Engineering Strategy
 
-Feature groups included:
-- Temporal indicators (month, weekday, hour)
-- Route and carrier identifiers
-- Airport traffic and hub indicators
-- Distance categories
-- Train-only historical risk encodings
-- Interaction features capturing compound effects
+Feature engineering was designed with two core principles:
 
-All target-derived features were computed **only on training data** to avoid leakage.
+1. Capture operational and historical drivers of flight delays  
+2. Prevent target leakage and preserve deployment realism  
+
+### Feature Groups
+
+**Temporal Features**
+- Month, day of week, quarter
+- Departure hour binned into operational windows (e.g., `6–8`, `9–11`, `18–20`)
+- Weekend, summer, winter, and holiday-season indicators
+
+**Route & Carrier Identifiers**
+- Origin airport
+- Destination airport
+- Route (`ORIGIN–DEST`)
+- Carrier
+- Carrier–route interaction (`CARRIER_ORIGIN–DEST`)
+
+**Traffic & Hub Indicators**
+- Hub airport flags (origin, destination, hub-to-hub)
+- Busy-airport indicators
+- Route popularity and traffic proxies
+
+**Distance-Based Features**
+- Raw distance (miles)
+- Normalized distance
+- Distance categories (Short / Medium / Long)
+- Haul-type indicators (short-haul, medium-haul, long-haul)
+
+**Historical Risk & Volume Encodings**
+- Historical delay rates for:
+  - Origin airport
+  - Destination airport
+  - Carrier
+  - Route
+  - Carrier–route
+- Training-only count statistics for the same entities
+
+> **Leakage Prevention**  
+> All historical risk and count features were computed **only on the training split** and persisted as lookup tables.  
+> Test and inference-time predictions reference these precomputed values exclusively, ensuring strict separation between training and evaluation data.
 
 ---
 
 ## 2.3 Models Implemented
 
-Three models were developed:
-- Logistic Regression (baseline, interpretable)
-- XGBoost (non-linear baseline)
-- CatBoost (native categorical handling)
+Three supervised classification models were developed and compared:
 
-A **time-based train/test split** was used to simulate real-world deployment.
+- **Logistic Regression**
+  - Interpretable baseline
+  - Strong probability calibration
+  - Limited non-linear modeling capacity
+
+- **XGBoost**
+  - Non-linear tree-based model
+  - Requires explicit categorical encoding
+  - Competitive performance with additional preprocessing
+
+- **CatBoost (Selected Model)**
+  - Native handling of categorical features
+  - Robust to high-cardinality route and carrier variables
+  - Reduced preprocessing complexity and improved stability
+
+### Train/Test Split Strategy
+
+A **time-based split** was used instead of random sampling:
+
+- Training data: earlier time periods
+- Test data: later, unseen periods
+
+This approach reflects real-world deployment and prevents temporal leakage.
 
 ---
 
@@ -142,36 +189,61 @@ A **time-based train/test split** was used to simulate real-world deployment.
 
 ## 3.1 Evaluation Metrics and Business Rationale
 
-Flight delay prediction is a highly imbalanced classification problem, with delayed flights representing approximately 13–15% of observations. In this context, traditional accuracy metrics are misleading, as a naive model predicting all flights as on time would achieve high accuracy without providing value.
+Flight delay prediction is an **imbalanced classification problem**, making accuracy an unsuitable metric.
 
-To address this, the following metrics were used:
-- **Precision–Recall AUC (PR-AUC)** as the primary metric, as it better reflects model performance on the minority (delayed) class.data
-- **ROC-AUC** as a secondary metric to evaluate overall ranking ability.
-- **Brier score** to assess the quality and reliability of predicted probabilities, which is critical for user-facing risk estimates.
+To evaluate performance meaningfully, the following metrics were used:
 
-This combination allows evaluation of both ranking performance and probability calibration, aligning with the needs of a travel decision-support application.
+- **Precision–Recall AUC (PR-AUC)** *(primary metric)*  
+  Measures performance on the minority (delayed) class and reflects the model’s ability to identify risky flights.
+
+- **ROC-AUC** *(secondary metric)*  
+  Evaluates overall ranking performance across thresholds.
+
+- **Brier Score**  
+  Assesses probability calibration and reliability, which is critical for user-facing risk estimates.
+
+This metric combination ensures both **discriminative power** and **probability quality**.
 
 ---
 
 ## 3.2 Model Comparison
 
-| Model | ROC-AUC | PR-AUC | Brier |
-|------|--------|--------|-------|
-| CatBoost | 0.693 | 0.299 | 0.186 |
+| Model | ROC-AUC | PR-AUC | Brier Score |
+|------|--------|--------|-------------|
+| **CatBoost** | **0.693** | **0.299** | 0.186 |
 | XGBoost | 0.679 | 0.290 | 0.180 |
-| Logistic Regression | 0.672 | 0.279 | 0.109 |
+| Logistic Regression | 0.672 | 0.279 | **0.109** |
 
-CatBoost achieved the strongest PR-AUC and was selected as the final model.
+CatBoost achieved the strongest PR-AUC and overall ranking performance, making it the most effective model for identifying delayed flights.
 
 ---
 
 ## 3.3 Threshold Selection
 
-A probability threshold of **0.30** was chosen to prioritize recall (~90%), ensuring that most delayed flights are flagged even at the cost of some false positives.
+Rather than using a default probability cutoff of 0.50, an operating threshold of **0.30** was selected based on validation analysis.
 
-This choice reflects a deliberate trade-off:
-- Higher recall reduces the likelihood of missing delayed flights.
-- Lower precision increases false positives, which are acceptable in this context because the application provides risk awareness, not hard guarantees.
+This threshold provides:
+- **High recall (~90%)**, minimizing missed delayed flights
+- Acceptable false positives for a decision-support application
+
+### Business Rationale
+
+- Missing a delayed flight is more costly than flagging a potential delay
+- The application communicates **risk**, not certainty
+- Conservative alerts support proactive traveler decision-making
+
+---
+
+## 3.4 Probability Calibration
+
+Tree-based models such as CatBoost tend to produce **overconfident probability estimates**.  
+To address this, **Platt Scaling (sigmoid calibration)** was applied:
+
+- A held-out calibration set was used
+- Raw model probabilities were converted to log-odds
+- A logistic regression calibrator was trained on these values
+
+Calibration improved probability reliability and produced smoother, more realistic risk distributions for UI consumption.
 
 ---
 
